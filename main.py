@@ -1,6 +1,7 @@
 import discord
 import os
 import gspread
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -9,12 +10,15 @@ from discord import app_commands
 from discord.ext import commands
 from sheets_helper import connect_sheet, find_artisan_block, get_artisan_type
 
-ALLOWED_UPDATE_CHANNELS = ["artisan-updates"]
-ALLOWED_VIEW_CHANNELS = ["artisan-lookup"]
+ALLOWED_UPDATE_CHANNELS = ["artisan-bot"]
+ALLOWED_VIEW_CHANNELS = ["artisan-bot"]
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
+
+def strip_emojis(text):
+    return re.sub(r"[^\w\s]", "", text).strip().lower()
 
 @bot.event
 async def on_ready():
@@ -80,7 +84,7 @@ async def update(interaction: discord.Interaction, artisan: str, level: int,
     rows = sheet.get_all_values()
     for row_index in range(7, len(rows)):
         cell = rows[row_index][start_col - 1]
-        if cell.strip().lower() == user.lower():
+        if strip_emojis(cell) == strip_emojis(user):
             sheet.update(
                 f"{gspread.utils.rowcol_to_a1(row_index + 1, start_col)}:{gspread.utils.rowcol_to_a1(row_index + 1, end_col)}",
                 [new_row]
@@ -138,7 +142,7 @@ async def view_me(interaction: discord.Interaction, artisan: str = None):
         col_span = {"crafting": 3, "processing": 4, "gathering": 5}[artisan_type]
         for row_idx in range(header_row, len(rows)):
             row = rows[row_idx]
-            if len(row) <= col or row[col].strip().lower() != user.lower():
+            if len(row) <= col or strip_emojis(row[col]) != strip_emojis(user):
                 continue
 
             stats = row[col:col + col_span]
@@ -192,7 +196,7 @@ async def view_user(interaction: discord.Interaction, username: str, artisan: st
 
         for row_idx in range(header_row, len(rows)):
             row = rows[row_idx]
-            if len(row) <= col or row[col].strip().lower() != username.lower():
+            if len(row) <= col or strip_emojis(row[col]) != strip_emojis(username):
                 continue
 
             stats = row[col:col + col_span]
