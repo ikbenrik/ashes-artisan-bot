@@ -10,8 +10,10 @@ from discord import app_commands
 from discord.ext import commands
 from sheets_helper import connect_sheet, find_artisan_block, get_artisan_type
 
-ALLOWED_UPDATE_CHANNELS = ["artisan-bot"]
-ALLOWED_VIEW_CHANNELS = ["artisan-bot"]
+
+
+# ALLOWED_UPDATE_CHANNELS = ["artisan-bot"]
+# ALLOWED_VIEW_CHANNELS = ["artisan-bot"]
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="/", intents=intents)
@@ -26,6 +28,7 @@ async def on_ready():
     print(f"✅ Bot logged in as {bot.user}")
     print("✅ Slash commands synced successfully.")
 
+
 @tree.command(name="update", description="Update your artisan skill stats")
 @app_commands.describe(
     artisan="Name of the artisan skill (case-insensitive)",
@@ -35,23 +38,13 @@ async def on_ready():
     quantity="(Processing/Gathering) Quantity rating",
     speed="(Gathering only) Speed"
 )
-async def update(interaction: discord.Interaction, artisan: str, level: int,
+async def update(interaction: discord.Interaction, artisan: str, level: int = None,
                  quality: int = None, rarity: int = None, quantity: int = None, speed: int = None):
 
-    channel_name = interaction.channel.name.lower()
-    if channel_name not in ALLOWED_UPDATE_CHANNELS:
-        await interaction.response.send_message(
-            "❌ Please use this command in the #artisan-updates channel.",
-            ephemeral=True
-        )
-        return
-
-    # ⏳ Defer response
     await interaction.response.defer(ephemeral=True)
 
     artisan = artisan.strip().title()
     sheet = connect_sheet()
-
     block = find_artisan_block(sheet, artisan)
     if not block:
         await interaction.followup.send(f"❌ Invalid artisan: **{artisan}**", ephemeral=True)
@@ -63,58 +56,68 @@ async def update(interaction: discord.Interaction, artisan: str, level: int,
     artisan_type = block["artisan_type"]
 
     if artisan_type == "crafting":
-        if quality is None:
-            await interaction.followup.send("❌ Missing `quality` for crafting.", ephemeral=True)
-            return
-        new_row = [user, str(level), str(quality)]
+        relevant_stats = [("level", level), ("quality", quality)]
     elif artisan_type == "processing":
-        if rarity is None or quantity is None:
-            await interaction.followup.send("❌ Missing `rarity` or `quantity` for processing.", ephemeral=True)
-            return
-        new_row = [user, str(level), str(rarity), str(quantity)]
+        relevant_stats = [("level", level), ("rarity", rarity), ("quantity", quantity)]
     elif artisan_type == "gathering":
-        if rarity is None or quantity is None or speed is None:
-            await interaction.followup.send("❌ Missing `rarity`, `quantity`, or `speed` for gathering.", ephemeral=True)
-            return
-        new_row = [user, str(level), str(rarity), str(quantity), str(speed)]
+        relevant_stats = [("level", level), ("rarity", rarity), ("quantity", quantity), ("speed", speed)]
     else:
         await interaction.followup.send("❌ Unknown artisan type.", ephemeral=True)
         return
 
+    if all(value is None for _, value in relevant_stats):
+        valid_fields = ", ".join(field for field, _ in relevant_stats)
+        await interaction.followup.send(
+            f"❌ Please provide at least one of the following for **{artisan}**: {valid_fields}.",
+            ephemeral=True
+        )
+        return
+
     rows = sheet.get_all_values()
+    found_row = None
+    insert_row = None
+
     for row_index in range(7, len(rows)):
-        cell = rows[row_index][start_col - 1]
+        row = rows[row_index]
+        if len(row) < start_col:
+            continue
+
+        cell = row[start_col - 1]
         if strip_emojis(cell) == strip_emojis(user):
-            sheet.update(
-                f"{gspread.utils.rowcol_to_a1(row_index + 1, start_col)}:{gspread.utils.rowcol_to_a1(row_index + 1, end_col)}",
-                [new_row]
-            )
-            await interaction.followup.send(f"✅ Updated your **{artisan}** stats!", ephemeral=True)
-            return
+            found_row = row_index
+            break
+        elif not cell.strip() and insert_row is None:
+            insert_row = row_index
 
-    # If user not found, insert in first empty row under the artisan block
-    for row_index in range(7, len(rows)):
-        cell = rows[row_index][start_col - 1]
-        if not cell.strip():
-            sheet.update(
-                f"{gspread.utils.rowcol_to_a1(row_index + 1, start_col)}:{gspread.utils.rowcol_to_a1(row_index + 1, end_col)}",
-                [new_row]
-            )
-            await interaction.followup.send(f"✅ Added new entry for **{artisan}**!", ephemeral=True)
-            return
+    if found_row is not None:
+        existing = rows[found_row][start_col - 1:end_col]
+        target_row = found_row
+    elif insert_row is not None:
+        existing = [""] * (end_col - start_col + 1)
+        target_row = insert_row
+    else:
+        existing = [""] * (end_col - start_col + 1)
+        target_row = len(rows)
 
-    # If all else fails, append at bottom
-    sheet.append_row([''] * (start_col - 1) + new_row)
-    await interaction.followup.send(f"✅ Added new entry for **{artisan}** at the bottom!", ephemeral=True)
+    updated_row = [user] + [
+        str(new) if new is not None else existing[i + 1]
+        for i, (_, new) in enumerate(relevant_stats)
+    ]
+
+    while len(updated_row) < (end_col - start_col + 1):
+        updated_row.append("")
+
+    cell_range = f"{gspread.utils.rowcol_to_a1(target_row + 1, start_col)}:{gspread.utils.rowcol_to_a1(target_row + 1, end_col)}"
+    sheet.update(cell_range, [updated_row])
+    print(f"[DEBUG] Wrote row {target_row + 1} → {updated_row}")
+
+    message = "✅ Updated" if found_row is not None else "✅ Added new entry for"
+    await interaction.followup.send(f"{message} **{artisan}**!", ephemeral=True)
 
 
 @tree.command(name="view_me", description="View your artisan stats")
 @app_commands.describe(artisan="(Optional) Specific artisan name to view")
 async def view_me(interaction: discord.Interaction, artisan: str = None):
-    channel_name = interaction.channel.name.lower()
-    if channel_name not in ALLOWED_VIEW_CHANNELS:
-        await interaction.response.send_message("❌ Please use this command in the #artisan-lookup channel.", ephemeral=True)
-        return
 
     user = interaction.user.display_name
     sheet = connect_sheet()
@@ -163,10 +166,7 @@ async def view_me(interaction: discord.Interaction, artisan: str = None):
 @tree.command(name="view_user", description="View another user's artisan stats")
 @app_commands.describe(username="The exact display name of the user", artisan="(Optional) Specific artisan to view")
 async def view_user(interaction: discord.Interaction, username: str, artisan: str = None):
-    channel_name = interaction.channel.name.lower()
-    if channel_name not in ALLOWED_VIEW_CHANNELS:
-        await interaction.response.send_message("❌ Please use this command in the #artisan-lookup channel.", ephemeral=True)
-        return
+
 
     await interaction.response.defer(ephemeral=True)  # Defer to avoid timeout
 
@@ -216,10 +216,6 @@ async def view_user(interaction: discord.Interaction, username: str, artisan: st
 @tree.command(name="view_art", description="View all players with a specific artisan")
 @app_commands.describe(artisan="Artisan name to list players for")
 async def view_art(interaction: discord.Interaction, artisan: str):
-    channel_name = interaction.channel.name.lower()
-    if channel_name not in ALLOWED_VIEW_CHANNELS:
-        await interaction.response.send_message("❌ Please use this command in the #artisan-lookup channel.", ephemeral=True)
-        return
 
     await interaction.response.defer(ephemeral=True)
 
@@ -259,5 +255,6 @@ async def view_art(interaction: discord.Interaction, artisan: str):
         )
     else:
         await interaction.followup.send(f"❌ No entries found for `{artisan}`.", ephemeral=True)
+
 
 bot.run(os.getenv("DISCORD_BOT_TOKEN"))
